@@ -3,11 +3,12 @@ message: "Si usas esta herramienta o sus ideas, cítala así. / If you use this 
 type: software
 title: "Metacognition: Poliedro de observación / Observation polyhedron"
 abstract: >-
-  Interactive tool for looking at an object of study from several frames of
-  observation placed on the vertices of a regular polyhedron. Each frame sees
-  a cap of the object and misses the rest; the tool shows what each frame
-  sees, the dialogue zones where frames overlap, and the collective blind
-  spot that no frame reaches.
+  Interactive metacognition tool. The object of study sits inside a regular
+  polyhedron whose faces are frames of observation: windows that each show
+  only part of the object. Findings are pinned to the object; turning it
+  brings one frame's findings in front of another frame's window, where they
+  are re-read (confirmed, nuanced, contradicted or extended). Edges hold
+  notes on the intersections between frames.
 authors:
   - alias: pahernandezceh
 version: 1.0.0

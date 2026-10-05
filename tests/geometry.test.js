@@ -1,107 +1,131 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SOLID_IDS, getSolid, vertexCount, capCos, capFraction, coverage, principalAnalysis, fibonacciSphere, dot,
-  DEFAULT_DISTANCE, MIN_DISTANCE, MAX_DISTANCE,
+  SOLID_IDS, INRADIUS, getSolid, faceCount, windowOf, worldNormals, windowOfFinding, placeFinding,
+  rotationToWindow, qRotate, qMul, qConj, qNormalize, qFromUnitVectors, dot, normalize, IDENTITY,
 } from '../js/geometry.js';
 
 const EXPECTED = {
-  tetrahedron: { v: 4, e: 6, opposites: 0 },
-  octahedron: { v: 6, e: 12, opposites: 3 },
-  cube: { v: 8, e: 12, opposites: 4 },
-  icosahedron: { v: 12, e: 30, opposites: 6 },
-  dodecahedron: { v: 20, e: 30, opposites: 10 },
+  tetrahedron: { faces: 4, edges: 6, opposites: 0, sides: 3 },
+  cube: { faces: 6, edges: 12, opposites: 3, sides: 4 },
+  octahedron: { faces: 8, edges: 12, opposites: 4, sides: 3 },
+  dodecahedron: { faces: 12, edges: 30, opposites: 6, sides: 5 },
+  icosahedron: { faces: 20, edges: 30, opposites: 10, sides: 3 },
 };
 
-const all = n => Array(n).fill(true);
+const close = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
 
-test('each Platonic solid has the right number of vertices, edges and opposite pairs', () => {
+function fibonacciSphere(n) {
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  return Array.from({ length: n }, (_, i) => {
+    const y = 1 - (2 * (i + 0.5)) / n;
+    const r = Math.sqrt(1 - y * y);
+    return [Math.cos(golden * i) * r, y, Math.sin(golden * i) * r];
+  });
+}
+
+const randomQuat = seed => {
+  let x = seed;
+  const rnd = () => ((x = (x * 16807) % 2147483647) / 2147483647) * 2 - 1;
+  return qNormalize([rnd(), rnd(), rnd(), rnd()]);
+};
+
+test('each solid has the right faces (frames), edges (intersections) and opposite faces', () => {
   for (const id of SOLID_IDS) {
     const s = getSolid(id);
-    assert.equal(s.vertices.length, EXPECTED[id].v, id);
-    assert.equal(vertexCount(id), EXPECTED[id].v, id);
-    assert.equal(s.edges.length, EXPECTED[id].e, id);
-    assert.equal(s.opposites.length, EXPECTED[id].opposites, id);
+    const e = EXPECTED[id];
+    assert.equal(s.faces.length, e.faces, id);
+    assert.equal(faceCount(id), e.faces, id);
+    assert.equal(s.edges.length, e.edges, id);
+    assert.equal(s.opposites.length, e.opposites, id);
+    for (const f of s.faces) assert.equal(f.verts.length, e.sides, id);
+    assert.equal(s.vertices.length - s.edges.length + s.faces.length, 2, `${id}: Euler characteristic`);
   }
 });
 
-test('vertices are unit vectors and every vertex has the same degree', () => {
+test('every window lies at the same distance in front of the object', () => {
   for (const id of SOLID_IDS) {
-    const { vertices, edges } = getSolid(id);
-    for (const v of vertices) assert.ok(Math.abs(Math.hypot(...v) - 1) < 1e-12, id);
-    const degree = vertices.map((_, i) => edges.filter(e => e.includes(i)).length);
-    assert.equal(new Set(degree).size, 1, `${id} is not vertex-regular`);
+    const { faces, vertices } = getSolid(id);
+    for (const f of faces) {
+      assert.ok(close(Math.hypot(...f.normal), 1), id);
+      for (const v of f.verts) assert.ok(close(dot(f.normal, vertices[v]), INRADIUS, 1e-7), id);
+      for (const v of vertices) assert.ok(dot(f.normal, v) <= INRADIUS + 1e-7, `${id}: convex`);
+    }
   }
 });
 
-test('all edges of a solid have the same length', () => {
+test('face loops are ordered: consecutive corners are joined by an edge', () => {
   for (const id of SOLID_IDS) {
-    const { vertices, edges } = getSolid(id);
-    const lengths = edges.map(([a, b]) => 1 - dot(vertices[a], vertices[b]));
-    assert.ok(Math.max(...lengths) - Math.min(...lengths) < 1e-9, id);
+    const { faces, vertices } = getSolid(id);
+    const len = (a, b) => Math.hypot(...vertices[a].map((c, k) => c - vertices[b][k]));
+    const edge = len(faces[0].verts[0], faces[0].verts[1]);
+    for (const f of faces) {
+      f.verts.forEach((v, k) => assert.ok(close(len(v, f.verts[(k + 1) % f.verts.length]), edge, 1e-7), id));
+    }
   }
 });
 
-test('the visible cap grows with distance but never reaches a hemisphere', () => {
-  assert.equal(capCos(2), 0.5);
-  assert.ok(capFraction(MIN_DISTANCE) < capFraction(DEFAULT_DISTANCE));
-  assert.ok(capFraction(DEFAULT_DISTANCE) < capFraction(MAX_DISTANCE));
-  assert.ok(capFraction(MAX_DISTANCE) < 0.5);
+test('edges join faces that share a side', () => {
+  for (const id of SOLID_IDS) {
+    const { faces, edges } = getSolid(id);
+    for (const e of edges) {
+      for (const v of e.verts) assert.ok(faces[e.a].verts.includes(v) && faces[e.b].verts.includes(v), id);
+    }
+  }
 });
 
-test('fibonacci samples lie on the unit sphere and are balanced', () => {
-  const pts = fibonacciSphere(2000);
-  const mean = [0, 1, 2].map(k => pts.reduce((s, p) => s + p[k], 0) / pts.length);
-  for (const p of pts) assert.ok(Math.abs(Math.hypot(...p) - 1) < 1e-12);
-  for (const m of mean) assert.ok(Math.abs(m) < 0.01);
+test('the windows tile the object: each shows the same share and none shows it whole', () => {
+  const pts = fibonacciSphere(12000);
+  for (const id of SOLID_IDS) {
+    const normals = getSolid(id).faces.map(f => f.normal);
+    const counts = new Array(normals.length).fill(0);
+    for (const p of pts) counts[windowOf(p, normals)]++;
+    const share = 1 / normals.length;
+    for (const c of counts) assert.ok(Math.abs(c / pts.length - share) < 0.01, `${id}: ${c / pts.length}`);
+  }
 });
 
-test('a single frame sees exactly its cap', () => {
-  const { vertices } = getSolid('octahedron');
-  const mask = [true, false, false, false, false, false];
-  const c = coverage(vertices, mask, 2);
-  assert.ok(Math.abs(c.covered - capFraction(2)) < 0.01);
-  assert.equal(c.dialogue, 0);
-  assert.equal(c.maxOverlap, 1);
+test('quaternion helpers', () => {
+  const q = randomQuat(7);
+  const v = normalize([0.3, -0.4, 0.8]);
+  assert.deepEqual(qRotate(IDENTITY, v), v);
+  const back = qRotate(qConj(q), qRotate(q, v));
+  v.forEach((c, k) => assert.ok(close(c, back[k], 1e-12)));
+  const id = qMul(q, qConj(q));
+  [0, 0, 0, 1].forEach((c, k) => assert.ok(close(Math.abs(id[k]), c, 1e-12)));
+  for (const b of [normalize([1, 2, 3]), v.map(c => -c)]) {
+    const r = qRotate(qFromUnitVectors(v, b), v);
+    b.forEach((c, k) => assert.ok(close(c, r[k], 1e-9)));
+  }
 });
 
-test('without named frames nothing is seen', () => {
-  const { vertices } = getSolid('cube');
-  const c = coverage(vertices, Array(8).fill(false), DEFAULT_DISTANCE);
-  assert.deepEqual([c.covered, c.blind, c.activeCount], [0, 1, 0]);
+test('a new finding is pinned inside the window it was found through, whatever the rotation', () => {
+  for (const id of SOLID_IDS) {
+    for (let seed = 1; seed < 4; seed++) {
+      const objectQ = randomQuat(seed);
+      const polyQ = randomQuat(seed + 10);
+      const normals = worldNormals(id, polyQ);
+      for (let face = 0; face < faceCount(id); face++) {
+        for (let k = 0; k < 12; k++) {
+          const pos = placeFinding(id, face, k, objectQ, polyQ);
+          assert.ok(close(Math.hypot(...pos), 1, 1e-9));
+          assert.equal(windowOfFinding(pos, objectQ, normals), face, `${id} face ${face} k ${k}`);
+        }
+      }
+    }
+  }
 });
 
-test('four frames leave a collective blind spot; twelve do not', () => {
-  const tetra = getSolid('tetrahedron');
-  const icosa = getSolid('icosahedron');
-  assert.ok(coverage(tetra.vertices, all(4), DEFAULT_DISTANCE).blind > 0.2);
-  assert.equal(coverage(icosa.vertices, all(12), DEFAULT_DISTANCE).blind, 0);
-});
-
-test('moving the frames away shrinks the blind spot and widens the dialogue zones', () => {
-  const { vertices } = getSolid('tetrahedron');
-  const near = coverage(vertices, all(4), 1.6);
-  const far = coverage(vertices, all(4), 2.4);
-  assert.ok(far.blind < near.blind);
-  assert.ok(far.dialogue > near.dialogue);
-  assert.equal(near.dialogue, 0, 'neighbouring tetrahedron caps do not touch at 1.6');
-});
-
-test('the dialogue path starts with the opposite frame and adds up', () => {
-  const { vertices } = getSolid('octahedron');
-  const a = principalAnalysis(vertices, all(6), 0, DEFAULT_DISTANCE);
-  assert.equal(a.path[0].index, 1, 'vertex 1 is antipodal to vertex 0');
-  assert.equal(a.path.length, 5);
-  for (let i = 1; i < a.path.length; i++) assert.ok(a.path[i].gain <= a.path[i - 1].gain + 1e-12);
-  const last = a.path.at(-1).total;
-  assert.ok(Math.abs(last + a.uncovered - 1) < 1e-12);
-  const c = coverage(vertices, all(6), DEFAULT_DISTANCE);
-  assert.ok(Math.abs(last - c.covered) < 1e-12);
-});
-
-test('the dialogue path ignores unnamed frames', () => {
-  const { vertices } = getSolid('octahedron');
-  const mask = [true, false, true, true, false, false];
-  const a = principalAnalysis(vertices, mask, 0, DEFAULT_DISTANCE);
-  assert.deepEqual(a.path.map(p => p.index).sort(), [2, 3]);
+test('turning the object can bring any finding to the centre of any other window', () => {
+  for (const id of SOLID_IDS) {
+    const objectQ = randomQuat(3);
+    const polyQ = randomQuat(5);
+    const normals = worldNormals(id, polyQ);
+    const pos = placeFinding(id, 0, 3, objectQ, polyQ);
+    for (let target = 0; target < faceCount(id); target++) {
+      const turned = rotationToWindow(pos, target, id, objectQ, polyQ);
+      assert.equal(windowOfFinding(pos, turned, normals), target, id);
+      assert.ok(dot(qRotate(turned, pos), normals[target]) > 1 - 1e-9, id);
+    }
+  }
 });

@@ -1,17 +1,22 @@
 // Entry point: wires state, 3D view, side panel and actions together.
 
-import { t, tn, pct, setLang, getLang, detectLang, applyI18n } from './i18n.js';
-import { SOLID_IDS, vertexCount, getSolid, coverage, principalAnalysis } from './geometry.js';
+import { t, tn, setLang, getLang, detectLang, applyI18n } from './i18n.js';
 import {
-  createState, ensureFrames, visibleFrames, isActive, hasContent, currentEdges, dialogueHasContent,
-  swapFrames, toJSON, normalizeState, encodeShare, decodeShare, saveLocal, loadLocal,
-  readPref, writePref, BACKUP_KEY,
+  SOLID_IDS, faceCount, getSolid, worldNormals, windowOfFinding, rotationToWindow, qRotate,
+  normalize, add, IDENTITY,
+} from './geometry.js';
+import {
+  createState, ensureFrames, visibleFrames, visibleFindings, isActive, hasContent, currentEdges,
+  edgeHasContent, noteHasContent, addFinding, addReread, toJSON, normalizeState, encodeShare,
+  decodeShare, saveLocal, loadLocal, readPref, writePref, BACKUP_KEY,
 } from './state.js';
+import { totals } from './analysis.js';
 import { buildExample } from './examples.js';
-import { PolyhedronView, PALETTE } from './scene.js';
+import { PolyhedronView } from './scene.js';
+import { frameColor } from './palette.js';
 import { createPanels, h } from './ui.js';
 import {
-  reportModel, toMarkdown, fillPrintReport, composePoster, download, slug, frameName, objectName,
+  reportModel, toMarkdown, fillPrintReport, composePoster, download, slug, frameName, objectName, findingLabels,
 } from './report.js';
 
 const PREF_LANG = 'metacognition:lang';
@@ -30,53 +35,56 @@ const app = {
   autoRotate: !matchMedia('(prefers-reduced-motion: reduce)').matches,
   view: null,
   panels: null,
+  labels: new Map(),
+  normals: [],
 };
 
-// ── Derived data (memoized: typing notes does not change the geometry) ──────
+// ── Derived data ─────────────────────────────────────────────────────────
 
-let statsMemo = { key: '', value: null };
-let analysisMemo = { key: '', value: null };
+function refreshDerived() {
+  app.labels = findingLabels(app.state);
+  app.normals = worldNormals(app.state.solid, app.state.view.poly);
+}
 
-const activeMask = () => visibleFrames(app.state).map(isActive);
+app.findingLabel = f => app.labels.get(f.id) || '';
+app.visibleFindings = () => visibleFindings(app.state);
+/** Face (window) through which a finding is seen with the current orientation. */
+app.windowOf = f => windowOfFinding(f.pos, app.state.view.object, app.normals);
 
-app.getStats = () => {
-  const s = app.state;
-  const mask = activeMask();
-  const key = `${s.solid}|${s.distance}|${mask.map(Number).join('')}`;
-  if (statsMemo.key !== key) {
-    statsMemo = { key, value: coverage(getSolid(s.solid).vertices, mask, s.distance) };
-  }
-  return statsMemo.value;
-};
-
-app.getAnalysis = () => {
-  const s = app.state;
-  const pi = visibleFrames(s).findIndex(f => f.id === s.principal);
-  if (pi < 0) return null;
-  const mask = activeMask();
-  const key = `${s.solid}|${s.distance}|${mask.map(Number).join('')}|${pi}`;
-  if (analysisMemo.key !== key) {
-    analysisMemo = { key, value: principalAnalysis(getSolid(s.solid).vertices, mask, pi, s.distance) };
-  }
-  return analysisMemo.value;
-};
+const findingById = id => app.state.findings.find(f => f.id === id);
+const frameIndexOf = id => visibleFrames(app.state).findIndex(f => f.id === id);
 
 const hasWork = s =>
-  !!(s.object.name.trim() || s.object.description.trim() || s.synthesis.trim() || s.frames.some(hasContent));
+  !!(s.object.name.trim() || s.object.description.trim() || s.synthesis.trim() || s.frames.some(f => hasContent(s, f)));
 
 // ── Update cycle ─────────────────────────────────────────────────────────
 
 function viewModel() {
   const s = app.state;
   const sel = app.selection;
+  const focusId = sel?.type === 'finding' ? sel.id : sel?.type === 'frame' ? sel.finding : null;
+  const byId = new Map(s.frames.map((f, i) => [f.id, [f, i]]));
   return {
     solid: s.solid,
-    distance: s.distance,
-    frames: visibleFrames(s).map(f => ({ active: isActive(f), principal: f.id === s.principal })),
-    dialogues: new Set(
-      currentEdges(s).filter(e => dialogueHasContent(s.dialogues[e.key])).map(e => `${e.a}-${e.b}`),
-    ),
-    selection: sel?.type === 'pair' ? { type: 'edge', a: sel.a, b: sel.b } : sel,
+    frames: visibleFrames(s).map((f, i) => ({
+      label: frameName(f, i), color: frameColor(f.color), active: isActive(f), principal: f.id === s.principal,
+    })),
+    findings: visibleFindings(s).map(f => {
+      const [frame, i] = byId.get(f.frame);
+      const label = app.labels.get(f.id);
+      return {
+        id: f.id,
+        pos: f.pos,
+        color: frameColor(frame.color),
+        label,
+        aria: t('finding.aria', { label, frame: frameName(frame, i) }),
+        rereadColors: [...new Set(f.rereads.filter(noteHasContent).map(r => byId.get(r.frame)?.[0]).filter(Boolean)
+          .map(x => frameColor(x.color)))],
+        selected: f.id === focusId,
+      };
+    }),
+    edgeNotes: new Set(currentEdges(s).filter(e => edgeHasContent(s.edges[e.key])).map(e => `${e.a}-${e.b}`)),
+    selection: sel?.type === 'finding' ? null : sel,
   };
 }
 
@@ -88,6 +96,7 @@ let saveTimer = 0;
  */
 app.commit = ({ user = true, structural = false } = {}) => {
   if (user) app.state.meta.pristine = false;
+  refreshDerived();
   app.view.update(viewModel());
   updateStage();
   app.panels.refresh({ structural });
@@ -95,18 +104,29 @@ app.commit = ({ user = true, structural = false } = {}) => {
   saveTimer = setTimeout(() => saveLocal(app.state), 400);
 };
 
-app.select = (sel, { fromPanel = false } = {}) => {
-  if (sel?.type === 'object') {
-    sel = null;
-    if (!fromPanel) app.setTab('object');
+/** Points the camera at what a selection is about. */
+function look(sel) {
+  const s = app.state;
+  let dir = null;
+  if (sel.type === 'frame') dir = app.normals[sel.index];
+  else if (sel.type === 'edge') dir = normalize(add(app.normals[sel.a], app.normals[sel.b]));
+  else if (sel.type === 'finding') {
+    const f = findingById(sel.id);
+    if (f) dir = qRotate(s.view.object, f.pos);
   }
+  if (dir) app.view.animate({ look: dir });
+}
+
+app.select = (sel, { fromPanel = false, keepCamera = false } = {}) => {
+  if (sel?.type === 'object') sel = null;
   app.selection = sel;
   if (sel) setAutoRotate(false);
   if (sel && !fromPanel) {
-    if (sel.type === 'frame' && app.tab !== 'frames') app.setTab('frames');
-    if (sel.type === 'edge' && app.tab !== 'dialogues') app.setTab('dialogues');
-    if (sel.type === 'frame' || sel.type === 'edge') app.panels.openCard(sel);
+    const tab = sel.type === 'edge' ? 'edges' : 'frames';
+    if (app.tab !== tab) app.setTab(tab);
+    app.panels.reveal(sel);
   }
+  if (sel && !keepCamera) look(sel);
   app.view.update(viewModel());
   updateStage();
   app.panels.syncSelection();
@@ -119,108 +139,134 @@ app.setTab = (tab, focus) => {
     btn.setAttribute('aria-selected', String(on));
     btn.tabIndex = on ? 0 : -1;
   }
-  for (const id of ['object', 'frames', 'dialogues', 'synthesis']) $(`panel-${id}`).hidden = id !== tab;
+  for (const id of ['object', 'frames', 'edges', 'synthesis']) $(`panel-${id}`).hidden = id !== tab;
   app.panels.render(tab);
   $('panel-scroll').scrollTop = 0;
   const sel = app.selection;
-  if (sel && ((tab === 'frames' && sel.type === 'frame') || (tab === 'dialogues' && sel.type === 'edge'))) {
-    app.panels.openCard(sel);
-  }
+  if (sel && ((tab === 'frames' && sel.type !== 'edge') || (tab === 'edges' && sel.type === 'edge'))) app.panels.reveal(sel);
   if (focus) app.panels.focus(focus);
 };
 
-app.swap = (i, j) => {
-  swapFrames(app.state, i, j);
-  app.selection = { type: 'frame', index: j };
+// ── Findings and re-readings ─────────────────────────────────────────────
+
+app.addFinding = faceIndex => {
+  const f = addFinding(app.state, faceIndex);
+  app.selection = { type: 'frame', index: faceIndex, finding: f.id };
+  setAutoRotate(false);
   app.commit({ structural: true });
-  app.panels.openCard(app.selection);
+  look(app.selection);
+  app.panels.reveal(app.selection);
+  app.panels.focusNote(f.id);
 };
 
-// ── Stage chrome ─────────────────────────────────────────────────────────
-
-function legendItems() {
+app.deleteFinding = id => {
+  const s = app.state;
+  s.findings = s.findings.filter(f => f.id !== id);
   const sel = app.selection;
-  if (sel?.type === 'frame') {
-    return [{ color: PALETTE.lit, label: t('legend.sees') }, { color: 'shadow', label: t('legend.blind') }];
-  }
-  if (sel?.type === 'edge' || sel?.type === 'pair') {
-    return [
-      { color: PALETTE.ramp[2], label: t('legend.both') },
-      { color: PALETTE.ramp[0], label: t('legend.onlyOne') },
-      { color: 'shadow', label: t('legend.none') },
-    ];
-  }
-  const stats = app.getStats();
-  if (!stats.activeCount) return [];
-  const items = [{ color: 'shadow', label: t('legend.blind') }];
-  const max = Math.max(1, Math.min(stats.maxOverlap, 4));
-  for (let n = 1; n <= max; n++) {
-    items.push({
-      color: PALETTE.ramp[n - 1],
-      label: n === 1 ? t('legend.count1') : t('legend.countN', { n: n === 4 && stats.maxOverlap > 4 ? '4+' : n }),
-    });
-  }
-  return items;
+  if (sel?.type === 'finding' && sel.id === id) app.selection = null;
+  if (sel?.type === 'frame' && sel.finding === id) app.selection = { type: 'frame', index: sel.index };
+  app.commit({ structural: true });
+};
+
+/** Turns the object so the finding sits in the middle of another frame's window, then opens its re-reading. */
+app.rereadFrom = (findingId, faceIndex) => {
+  const s = app.state;
+  const f = findingById(findingId);
+  if (!f) return;
+  const reader = visibleFrames(s)[faceIndex];
+  const reread = addReread(f, reader.id);
+  app.panels.openRereads(f.id);
+  app.selection = { type: 'frame', index: faceIndex, finding: f.id };
+  setAutoRotate(false);
+  if (app.tab !== 'frames') app.setTab('frames');
+  app.commit({ structural: true });
+  const object = rotationToWindow(f.pos, faceIndex, s.solid, s.view.object, s.view.poly);
+  const lookDir = qRotate(s.view.poly, getSolid(s.solid).faces[faceIndex].normal);
+  app.view.animate({ object, look: lookDir }, () => {
+    app.panels.reveal(app.selection);
+    app.panels.focusNote(reread.id, `.frame-card[data-index="${faceIndex}"] .inview[data-finding="${f.id}"]`);
+  });
+};
+
+/** Re-reads a finding that is already in front of this window. */
+app.rereadHere = (findingId, faceIndex) => {
+  const f = findingById(findingId);
+  if (!f) return;
+  const reread = addReread(f, visibleFrames(app.state)[faceIndex].id);
+  app.panels.openRereads(f.id);
+  app.selection = { type: 'frame', index: faceIndex, finding: f.id };
+  app.commit({ structural: true });
+  app.panels.focusNote(reread.id, `.frame-card[data-index="${faceIndex}"] .inview[data-finding="${f.id}"]`);
+};
+
+const sameQuat = (a, b) => Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]) > 0.999999;
+
+/** The object or the polyhedron finished turning (drag or animation). */
+function onOrientation(o) {
+  const v = app.state.view;
+  const changed = !sameQuat(v.object, o.object) || !sameQuat(v.poly, o.poly);
+  if (!changed) return;
+  app.state.view = o;
+  app.commit({ user: false, structural: app.tab === 'frames' });
 }
+
+// ── Stage chrome ─────────────────────────────────────────────────────────
 
 function updateStage() {
   const s = app.state;
   const sel = app.selection;
   const frames = visibleFrames(s);
-  const stats = app.getStats();
   const name = i => frameName(frames[i], i);
 
   $('stage-title').textContent = objectName(s);
   document.title = s.object.name.trim() ? `${s.object.name.trim()} — Metacognition` : t('docTitle');
 
   let mode;
-  if (sel?.type === 'frame') mode = t('mode.frame', { name: name(sel.index) });
-  else if (sel?.type === 'edge') mode = t('mode.edge', { a: name(sel.a), b: name(sel.b) });
-  else if (sel?.type === 'pair') mode = t('mode.pair', { a: name(sel.a), b: name(sel.b) });
-  else mode = stats.activeCount ? t('mode.coverage') : t('mode.empty');
+  if (sel?.type === 'frame') {
+    const inWindow = app.visibleFindings().filter(f => app.windowOf(f) === sel.index);
+    const own = inWindow.filter(f => f.frame === frames[sel.index].id).length;
+    mode = t('mode.frame', { name: name(sel.index), own, others: inWindow.length - own });
+  } else if (sel?.type === 'edge') {
+    mode = t('mode.edge', { a: name(sel.a), b: name(sel.b) });
+  } else if (sel?.type === 'finding') {
+    const f = findingById(sel.id);
+    const w = f ? app.windowOf(f) : -1;
+    mode = f ? t('mode.finding', { origin: name(frameIndexOf(f.frame)), window: w >= 0 ? name(w) : '?' }) : '';
+  } else {
+    mode = frames.some(isActive) ? t('mode.overview') : t('mode.empty');
+  }
   $('stage-mode').textContent = mode;
   $('stage-back').hidden = !sel;
 
+  const sum = totals(s);
   $('stage-stats').replaceChildren(
-    ...[
-      ['stat.covered', stats.covered, ''],
-      ['stat.blind', stats.blind, 'is-blind'],
-      ['stat.dialogue', stats.dialogue, ''],
-    ].map(([key, v, cls]) => h('div', { class: cls || null }, h('dt', {}, t(key)), h('dd', {}, pct(v)))),
+    ...[['stat.findings', sum.findings, ''], ['stat.rereads', sum.rereads, ''], ['stat.unread', sum.unread, 'is-blind']]
+      .map(([key, v, cls]) => h('div', { class: cls || null }, h('dt', {}, t(key)), h('dd', {}, String(v)))),
   );
 
+  const max = 8;
   $('legend').replaceChildren(
-    ...legendItems().map(item =>
-      h('li', {},
-        h('span', {
-          class: item.color === 'shadow' ? 'swatch is-shadow' : 'swatch',
-          style: item.color === 'shadow' ? null : `background:${item.color}`,
-        }),
-        item.label,
-      ),
-    ),
+    ...frames.slice(0, max).map((f, i) =>
+      h('li', { class: isActive(f) ? null : 'is-vacant' },
+        h('span', { class: 'swatch', style: `background:${frameColor(f.color)}` }),
+        h('span', { class: 'legend-num' }, String(i + 1).padStart(2, '0')),
+        frameName(f, i),
+      )),
+    ...(frames.length > max ? [h('li', { class: 'legend-more' }, `+${frames.length - max}`)] : []),
   );
-
-  const slider = $('distance');
-  if (Number(slider.value) !== s.distance) slider.value = String(s.distance);
-  $('distance-value').textContent = s.distance.toFixed(2);
   $('solid-select').value = s.solid;
-}
-
-/** Stand-in when WebGL is unavailable: the panel, stats and exports keep working. */
-function nullView() {
-  const blank = document.createElement('canvas');
-  return {
-    update() {}, setHover() {}, setAutoRotate() {}, resetView() {},
-    capture: () => blank,
-    projectedFrames: () => [],
-  };
 }
 
 function setAutoRotate(on) {
   app.autoRotate = on;
   app.view.setAutoRotate(on);
   $('rotate-btn').setAttribute('aria-pressed', String(on));
+}
+
+function setDragMode(mode) {
+  app.view.setDragMode?.(mode);
+  for (const b of document.querySelectorAll('[data-drag]')) b.setAttribute('aria-checked', String(b.dataset.drag === mode));
+  if (mode !== 'view') setAutoRotate(false);
 }
 
 // ── Tooltip ──────────────────────────────────────────────────────────────
@@ -240,11 +286,18 @@ function showTooltip(target, x, y) {
   if (target.type === 'frame') {
     const f = frames[target.index];
     title = frameName(f, target.index);
-    body = f.sees.trim() ? `${t('tip.sees')}: ${clip(f.sees.trim())}` : null;
+    const n = s.findings.filter(x2 => x2.frame === f.id && noteHasContent(x2)).length;
+    body = [t('tip.findings', { n }), f.focus.trim() && clip(f.focus.trim(), 120)].filter(Boolean).join(' · ');
   } else if (target.type === 'edge') {
-    title = `${frameName(frames[target.a], target.a)} ↔ ${frameName(frames[target.b], target.b)}`;
-    const d = s.dialogues[currentEdges(s).find(e => e.a === target.a && e.b === target.b)?.key];
-    body = d?.tension?.trim() ? clip(d.tension.trim()) : t('tip.edge');
+    title = `${frameName(frames[target.a], target.a)} × ${frameName(frames[target.b], target.b)}`;
+    const e = s.edges[currentEdges(s).find(x2 => x2.a === target.a && x2.b === target.b)?.key];
+    body = e?.tension?.trim() ? clip(e.tension.trim()) : t('tip.edge');
+  } else if (target.type === 'finding') {
+    const f = findingById(target.id);
+    if (!f) { tip.hidden = true; return; }
+    const i = frameIndexOf(f.frame);
+    title = `${app.findingLabel(f)} · ${frameName(frames[i], i)}`;
+    body = f.text.trim() ? clip(f.text.trim()) : null;
   } else {
     title = objectName(s);
     body = t('tip.object');
@@ -283,6 +336,7 @@ function replaceState(next, { backup = true } = {}) {
   if (backup && hasWork(app.state) && !app.state.meta.pristine) saveLocal(app.state, BACKUP_KEY);
   app.state = next;
   app.selection = null;
+  app.view.setOrientation(next.view);
   app.commit({ user: false, structural: true });
 }
 
@@ -316,8 +370,13 @@ function changeSolid(id) {
   ensureFrames(s);
   app.selection = null;
   app.commit({ structural: true });
-  const hidden = s.frames.slice(vertexCount(id)).filter(hasContent).length;
+  const hidden = s.frames.slice(faceCount(id)).filter(f => hasContent(s, f)).length;
   if (hidden) toast(tn('toast.hidden', hidden));
+}
+
+function goHome() {
+  setAutoRotate(false);
+  app.view.animate({ object: [...IDENTITY], poly: [...IDENTITY] });
 }
 
 async function share() {
@@ -336,18 +395,16 @@ function poster(model) {
   const host = $('canvas-host');
   return composePoster({
     glCanvas: app.view.capture(),
-    points: app.view.projectedFrames(),
+    labels: app.view.projectedLabels(),
     cssWidth: host.clientWidth,
     cssHeight: host.clientHeight,
     model,
-    labels: visibleFrames(app.state).map(frameName),
-    legend: legendItems().map(i => ({ ...i, color: i.color === 'shadow' ? PALETTE.shadow : i.color })),
   });
 }
 
 async function exportAs(kind) {
   const s = app.state;
-  const model = reportModel(s, app.getStats(), app.getAnalysis());
+  const model = reportModel(s);
   const base = `metacognition-${slug(objectName(s))}`;
   if (kind === 'json') {
     download(`${base}.json`, `${JSON.stringify(toJSON(s), null, 2)}\n`, 'application/json');
@@ -386,7 +443,7 @@ function applyLanguage() {
     btn.setAttribute('aria-pressed', String(btn.dataset.lang === getLang()));
   }
   $('solid-select').replaceChildren(
-    ...SOLID_IDS.map(id => h('option', { value: id }, t('solidOption', { name: t(`solid.${id}`), n: vertexCount(id) }))),
+    ...SOLID_IDS.map(id => h('option', { value: id }, t('solidOption', { name: t(`solid.${id}`), n: faceCount(id) }))),
   );
   $('solid-select').value = app.state.solid;
   $('docs-link').href = DOCS[getLang()];
@@ -398,7 +455,11 @@ function changeLang(lang) {
   writePref(PREF_LANG, lang);
   $('toast').hidden = true;
   const s = app.state;
-  if (s.meta.pristine && s.meta.example) app.state = buildExample(s.meta.example, lang);
+  if (s.meta.pristine && s.meta.example) {
+    const view = s.view;
+    app.state = buildExample(s.meta.example, lang);
+    app.state.view = view;
+  }
   applyLanguage();
   app.commit({ user: false, structural: true });
 }
@@ -418,16 +479,25 @@ function onIntroClose() {
   if (choice === 'example') loadExample('sustainability');
 }
 
+/** Stand-in when WebGL is unavailable: the panel, analysis and exports keep working. */
+function nullView() {
+  const blank = document.createElement('canvas');
+  return {
+    update() {}, setHover() {}, setAutoRotate() {}, resetView() {}, setDragMode() {}, setOrientation() {},
+    animate(_, done) { done?.(); },
+    capture: () => blank,
+    projectedLabels: () => ({ faces: [], findings: [] }),
+  };
+}
+
 // ── Wiring ───────────────────────────────────────────────────────────────
 
 function bindChrome() {
   $('solid-select').addEventListener('change', e => changeSolid(e.target.value));
-  $('distance').addEventListener('input', e => {
-    app.state.distance = Number(e.target.value);
-    app.commit();
-  });
   $('rotate-btn').addEventListener('click', () => setAutoRotate(!app.autoRotate));
   $('reset-btn').addEventListener('click', () => app.view.resetView());
+  $('home-btn').addEventListener('click', goHome);
+  for (const b of document.querySelectorAll('[data-drag]')) b.addEventListener('click', () => setDragMode(b.dataset.drag));
   $('stage-back').addEventListener('click', () => app.select(null));
   $('help-btn').addEventListener('click', openIntro);
   $('intro').addEventListener('close', onIntroClose);
@@ -481,7 +551,7 @@ function bindChrome() {
 
   window.addEventListener('beforeprint', () => {
     if ($('print-report').childElementCount) return;
-    const model = reportModel(app.state, app.getStats(), app.getAnalysis());
+    const model = reportModel(app.state);
     fillPrintReport($('print-report'), model, poster(model).toDataURL('image/png'));
   });
   window.addEventListener('afterprint', () => $('print-report').replaceChildren());
@@ -506,8 +576,13 @@ async function boot() {
   if (shared && local && hasWork(local) && !local.meta.pristine) saveLocal(local, BACKUP_KEY);
   const firstVisit = !state && !local;
   state ||= local || buildExample(params.get('example') === 'ai' ? 'ai' : 'sustainability', getLang());
-  if (state.meta.pristine && state.meta.example) state = buildExample(state.meta.example, getLang());
+  if (state.meta.pristine && state.meta.example) {
+    const view = state.view;
+    state = buildExample(state.meta.example, getLang());
+    state.view = view;
+  }
   app.state = state;
+  refreshDerived();
 
   try {
     app.view = new PolyhedronView($('canvas-host'), {
@@ -517,13 +592,14 @@ async function boot() {
         showTooltip(target, x, y);
       },
       onUserRotate: () => setAutoRotate(false),
-      labelText: i => frameName(visibleFrames(app.state)[i], i),
+      onOrientation,
     });
   } catch (err) {
     console.warn('3D view unavailable:', err);
     app.view = nullView();
     $('canvas-host').append(h('p', { class: 'no-webgl', 'data-i18n': 'noWebgl' }, t('noWebgl')));
   }
+  app.view.setOrientation(state.view);
   app.panels = createPanels(app);
   bindChrome();
   applyLanguage();
