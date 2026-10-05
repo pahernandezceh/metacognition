@@ -1,0 +1,28 @@
+cff-version: 1.2.0
+message: "Si usas esta herramienta o sus ideas, cítala así. / If you use this tool or its ideas, please cite it as below."
+type: software
+title: "Metacognition: Poliedro de observación / Observation polyhedron"
+abstract: >-
+  Interactive tool for looking at an object of study from several frames of
+  observation placed on the vertices of a regular polyhedron. Each frame sees
+  a cap of the object and misses the rest; the tool shows what each frame
+  sees, the dialogue zones where frames overlap, and the collective blind
+  spot that no frame reaches.
+authors:
+  - alias: pahernandezceh
+version: 1.0.0
+date-released: 2026-10-05
+license:
+  - MIT
+  - CC-BY-4.0
+repository-code: "https://github.com/pahernandezceh/metacognition"
+url: "https://pahernandezceh.github.io/metacognition/"
+keywords:
+  - metacognition
+  - metacognición
+  - interdisciplinarity
+  - second-order observation
+  - complex thought
+  - situated knowledges
+  - education
+  - visualization

@@ -1,0 +1,24 @@
+{
+  "name": "metacognition",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Poliedro de observación: herramienta interactiva para ver un objeto de estudio desde varios marcos y reconocer sus puntos ciegos.",
+  "type": "module",
+  "license": "MIT",
+  "author": "pahernandezceh",
+  "homepage": "https://pahernandezceh.github.io/metacognition/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pahernandezceh/metacognition.git"
+  },
+  "scripts": {
+    "start": "http-server . -c-1 -p 8080 -s",
+    "test": "node --test",
+    "build:vendor": "esbuild tools/three-entry.js --bundle --minify --format=esm --legal-comments=inline --outfile=vendor/three.bundle.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10",
+    "http-server": "14.1.1",
+    "three": "0.186.1"
+  }
+}

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Metacognition — Poliedro de observación</title>
+  <meta name="description" content="Herramienta interactiva para mirar un objeto de estudio desde varios marcos de observación y reconocer lo que cada uno ve, lo que ninguno ve y dónde pueden dialogar.">
+  <meta name="theme-color" content="#f5f2ec">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Metacognition — Poliedro de observación">
+  <meta property="og:description" content="Ver cómo vemos: un poliedro de marcos alrededor de un objeto de estudio, con su luz, su sombra y sus diálogos.">
+  <meta property="og:image" content="https://pahernandezceh.github.io/metacognition/docs/og.png">
+  <meta property="og:url" content="https://pahernandezceh.github.io/metacognition/">
+  <meta name="twitter:card" content="summary_large_image">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preload" href="assets/fonts/dm-serif-display-400.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="assets/fonts/lato-300.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="css/fonts.css">
+  <link rel="stylesheet" href="css/styles.css">
+  <link rel="modulepreload" href="vendor/three.bundle.js">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#panel" data-i18n="skip">Ir al panel de edición</a>
+
+  <div class="app" id="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1 class="brand-name">Meta<em>cognition</em></h1>
+        <span class="brand-tagline" data-i18n="tagline">Poliedro de observación</span>
+      </div>
+      <div class="topbar-controls">
+        <label class="solid-picker">
+          <span class="mono-label" data-i18n="solidLabel">Poliedro</span>
+          <select id="solid-select"></select>
+        </label>
+        <div class="lang-switch" role="group" data-i18n-aria="langLabel">
+          <button type="button" data-lang="es" lang="es">ES</button>
+          <button type="button" data-lang="en" lang="en">EN</button>
+        </div>
+        <button type="button" class="icon-btn" id="help-btn" data-i18n-aria="help" data-i18n-title="help">?</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="stage" id="stage" data-i18n-aria="canvasLabel">
+        <div class="canvas-host" id="canvas-host"></div>
+
+        <div class="stage-caption">
+          <h2 id="stage-title"></h2>
+          <p id="stage-mode"></p>
+          <button type="button" class="link-btn" id="stage-back" hidden>
+            <span aria-hidden="true">←</span> <span data-i18n="mode.back">Ver cobertura</span>
+          </button>
+        </div>
+
+        <dl class="stage-stats" id="stage-stats" aria-live="polite"></dl>
+
+        <div class="stage-bottom">
+          <div class="distance-control">
+            <label for="distance" class="mono-label">
+              <span data-i18n="distance">Distancia de observación</span>
+              <output id="distance-value" for="distance"></output>
+            </label>
+            <input type="range" id="distance" min="1.15" max="3.2" step="0.01">
+            <div class="distance-ends">
+              <span data-i18n="distance.near">especialista</span>
+              <span data-i18n="distance.far">generalista</span>
+            </div>
+          </div>
+          <div class="view-buttons">
+            <button type="button" class="icon-btn" id="rotate-btn" aria-pressed="true" data-i18n-aria="rotate" data-i18n-title="rotate">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v4.5h-4.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="icon-btn" id="reset-btn" data-i18n-aria="resetView" data-i18n-title="resetView">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+            </button>
+          </div>
+          <ul class="legend" id="legend"></ul>
+        </div>
+
+        <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+      </section>
+
+      <aside class="panel" id="panel" tabindex="-1">
+        <nav class="tabs" role="tablist">
+          <button type="button" role="tab" id="tab-object" aria-controls="panel-object" data-tab="object">
+            <span data-i18n="tab.object">Objeto</span>
+          </button>
+          <button type="button" role="tab" id="tab-frames" aria-controls="panel-frames" data-tab="frames">
+            <span data-i18n="tab.frames">Marcos</span> <span class="tab-count" id="count-frames"></span>
+          </button>
+          <button type="button" role="tab" id="tab-dialogues" aria-controls="panel-dialogues" data-tab="dialogues">
+            <span data-i18n="tab.dialogues">Diálogos</span> <span class="tab-count" id="count-dialogues"></span>
+          </button>
+          <button type="button" role="tab" id="tab-synthesis" aria-controls="panel-synthesis" data-tab="synthesis">
+            <span data-i18n="tab.synthesis">Síntesis</span>
+          </button>
+        </nav>
+
+        <div class="panel-scroll" id="panel-scroll">
+          <section class="tab-panel" role="tabpanel" id="panel-object" aria-labelledby="tab-object"></section>
+          <section class="tab-panel" role="tabpanel" id="panel-frames" aria-labelledby="tab-frames" hidden></section>
+          <section class="tab-panel" role="tabpanel" id="panel-dialogues" aria-labelledby="tab-dialogues" hidden></section>
+          <section class="tab-panel" role="tabpanel" id="panel-synthesis" aria-labelledby="tab-synthesis" hidden></section>
+        </div>
+
+        <footer class="panel-actions">
+          <button type="button" class="btn btn-primary" id="share-btn">
+            <span aria-hidden="true">⇪</span> <span data-i18n="act.share">Compartir enlace</span>
+          </button>
+          <details class="menu">
+            <summary class="btn"><span data-i18n="act.export">Exportar</span> <span aria-hidden="true">▾</span></summary>
+            <div class="menu-list">
+              <button type="button" data-export="md" data-i18n="act.md">Informe (Markdown)</button>
+              <button type="button" data-export="print" data-i18n="act.print">Imprimir / PDF</button>
+              <button type="button" data-export="png" data-i18n="act.png">Imagen (PNG)</button>
+              <button type="button" data-export="json" data-i18n="act.json">Datos (JSON)</button>
+            </div>
+          </details>
+          <button type="button" class="btn" id="import-btn" data-i18n="act.import">Importar</button>
+          <details class="menu">
+            <summary class="btn"><span data-i18n="act.examples">Ejemplos</span> <span aria-hidden="true">▾</span></summary>
+            <div class="menu-list">
+              <button type="button" data-example="sustainability" data-i18n="ex.sustainability">Sustentabilidad · octaedro</button>
+              <button type="button" data-example="ai" data-i18n="ex.ai">IA en la educación · tetraedro</button>
+            </div>
+          </details>
+          <button type="button" class="btn" id="new-btn" data-i18n="act.new">Nuevo</button>
+          <input type="file" id="file-input" accept=".json,application/json" hidden>
+        </footer>
+      </aside>
+    </main>
+  </div>
+
+  <dialog class="intro" id="intro">
+    <form method="dialog" class="intro-inner">
+      <button class="icon-btn intro-close" value="close" data-i18n-aria="close">✕</button>
+      <p class="mono-label">Metacognition</p>
+      <h2 data-i18n="intro.title">Ver cómo vemos</h2>
+      <p data-i18n="intro.p1"></p>
+      <p data-i18n="intro.p2"></p>
+      <h3 data-i18n="intro.how">Cómo usarlo</h3>
+      <ol>
+        <li data-i18n="intro.s1"></li>
+        <li data-i18n="intro.s2"></li>
+        <li data-i18n="intro.s3"></li>
+        <li data-i18n="intro.s4"></li>
+        <li data-i18n="intro.s5"></li>
+      </ol>
+      <p class="intro-privacy" data-i18n="intro.privacy"></p>
+      <div class="intro-actions">
+        <button class="btn btn-primary" value="example" data-i18n="intro.example" autofocus>Explorar el ejemplo</button>
+        <button class="btn" value="blank" data-i18n="intro.blank">Empezar en blanco</button>
+        <a class="link-btn" id="docs-link" href="https://github.com/pahernandezceh/metacognition#readme" target="_blank" rel="noopener" data-i18n="intro.docs">Fundamento y documentación</a>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <article class="print-report" id="print-report" aria-hidden="true"></article>
+
+  <noscript>
+    <p class="noscript">Metacognition necesita JavaScript para mostrar el poliedro. · Metacognition needs JavaScript to display the polyhedron.</p>
+  </noscript>
+</body>
+</html>
